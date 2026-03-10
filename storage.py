@@ -1,3 +1,3 @@
 users = {}
 clicker_state = {}
-clicker_stats = {}
+clicker_stats = {} 
