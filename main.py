@@ -2,7 +2,7 @@ from aiogram import Bot
 from aiogram.enums import ParseMode
 from keyboards import coin_market_kb
 import random
-import datetime
+import datetime 
 from aiogram import F, Router
 from aiogram.types import Message, CallbackQuery
 from keyboards import clicker_inline_kb
