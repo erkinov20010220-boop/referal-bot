@@ -1,6 +1,6 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-# ================= COIN MARKET =================
+# ================= COIN MARKET ================= 
 
 def coin_market_kb():
     return ReplyKeyboardMarkup(
