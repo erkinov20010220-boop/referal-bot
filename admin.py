@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 # ================= CONFIGURATION =================
-
+ 
 load_dotenv()
 ADMIN_ID = int(os.getenv("ADMIN_ID") or 0)
 router = Router()
