@@ -1,226 +1,282 @@
-import os
-import sqlite3
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    ReplyKeyboardMarkup
-)
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from keyboards import coin_market_kb
+import random
+import datetime
+from aiogram import F, Router
+from aiogram.types import Message, CallbackQuery
+from keyboards import clicker_inline_kb
+from storage import users, clicker_stats, clicker_state
 
-# ================== SOZLAMALAR ==================
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-CHANNEL = "@referal_bozori"
 
-REF_TARGET = 10
-REF_REWARD = 15000
+##########
 
-# ================== DATABASE ==================
-conn = sqlite3.connect("users.db", check_same_thread=False)
-cur = conn.cursor()
+mini_game_state = {}  # Foydalanuvchi holati
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users(
-    user_id INTEGER PRIMARY KEY,
-    referrer INTEGER,
-    refs INTEGER DEFAULT 0,
-    balance INTEGER DEFAULT 0
-)
-""")
+# ================= FORMAT FUNCTIONS =================
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS withdraws(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    amount INTEGER,
-    status TEXT
-)
-""")
-conn.commit()
+def format_rc(amount: float) -> str:
+    text = f"{amount:.4f}"
+    return text.rstrip("0").rstrip(".")
 
-# ================== MENU ==================
-menu = ReplyKeyboardMarkup(
-    [
-        ["🔗 Referal link", "📊 Statistika"],
-        ["💰 Balans", "📤 Pul yechish"],
-        ["💳 Click", "👤 Admin"]
-    ],
-    resize_keyboard=True
-)
+MAX_DAILY_RC = 100.0
 
-# ================== KANAL TEKSHIRISH ==================
-async def check_sub(bot, user_id):
-    try:
-        m = await bot.get_chat_member(CHANNEL, user_id)
-        return m.status in ("member", "administrator", "creator")
-    except:
-        return False
+router = Router()
 
-# ================== START ==================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    bot = context.bot
+######
 
-    # Kanalga obuna tekshirish
-    if not await check_sub(bot, uid):
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Kanalga obuna bo‘lish", url=f"https://t.me/{CHANNEL[1:]}")]
-        ])
-        await update.message.reply_text(
-            "❗ Botdan foydalanish uchun kanalga obuna bo‘ling",
-            reply_markup=kb
-        )
+def get_clicker_ranking():
+    return sorted(
+        clicker_stats.items(),
+        key=lambda x: x[1]["total_rc"],
+        reverse=True
+    )
+
+# Inline tugma
+
+def mini_game_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏱️ To‘xtatish", callback_data="stop_timer")]
+        ]
+    )
+   
+#coin market
+
+@router.message(F.text == "🪙 Coin Market")
+async def coin_market(message: Message):
+
+    text = """
+<b>Coin Market orqali siz:</b>
+
+• Bepul <b>RC</b> tangalarini yig‘ishingiz
+• <b>O‘yin</b> va <b>lotereyalar</b> orqali balansni ko‘paytirishingiz
+• Valyuta statistikalarini tahlil qilishingiz
+• Bozordagi narx harakatlarini kuzatib, tangalaringizni qulay vaqtda sotishingiz
+• Yig‘ilgan <b>RC</b>ʻlarni haqiqiy pulga aylantirishingiz mumkin.
+
+<i>📈 Aqlli savdo qiling, to‘g‘ri vaqtni tanlang va daromadingizni oshiring!</i>
+"""
+
+    await message.answer(
+        text,
+        reply_markup=coin_market_kb(),
+        parse_mode=ParseMode.HTML
+    )
+
+
+#COIN MARKETGA QAYTISH
+
+@router.message(F.text == "⬅️ Coin Market")
+async def back_to_coin(message: Message):
+
+    await message.answer(
+        "🪙 Coin Market:",
+        reply_markup=coin_market_kb()
+    )
+# ================= START =================
+
+@router.message(F.text == "🕹 RC yig‘ish")
+async def start_clicker(message: Message):
+    uid = message.from_user.id
+
+    state = clicker_state.setdefault(uid, {
+    "click_count": 0,
+    "pause_until": None,
+    "daily_rc": 0.0,
+    "daily_reset": datetime.date.today(),
+})
+
+    now = datetime.datetime.now()
+
+    if state["daily_reset"] != now.date():
+        state.update({
+            "click_count": 0,
+            "pause_until": None,
+            "daily_rc": 0.0,
+            "daily_reset": now.date(),
+        })
+
+    text = (
+        f"<b>🪙 REFERAL COIN – CLICKER</b>\n\n"
+        f"💰 UMUMIY BALANS: <b>{format_rc(users[uid]['rc_balance'])} RC</b>\n"
+f"⏱️ Bugun yig‘ilgan: <code>{format_rc(state['daily_rc'])} / {format_rc(MAX_DAILY_RC)}</code>\n\n"
+        f"🎉 Joriy hisob: +0 RC"
+    )
+
+    await message.answer(text, parse_mode="HTML", reply_markup=clicker_inline_kb())
+
+# ================= CLICK =================
+
+@router.callback_query(F.data == "click_coin")
+async def click_coin(call: CallbackQuery):
+    uid = call.from_user.id
+    now = datetime.datetime.now()
+
+    state = clicker_state.setdefault(uid, {
+        "click_count": 0,
+        "pause_until": None,
+        "daily_rc": 0.0,
+        "daily_reset": datetime.date.today(),
+    })
+
+    # 📅 Daily reset
+    if state["daily_reset"] != now.date():
+        state.update({
+            "click_count": 0,
+            "pause_until": None,
+            "daily_rc": 0.0,
+            "daily_reset": now.date(),
+        })
+
+    # ⏳ Pause tekshiruv
+    if state["pause_until"] and now < state["pause_until"]:
+        remaining = int((state["pause_until"] - now).total_seconds())
+        await call.answer(f"⏳ {remaining} soniya kuting", show_alert=True)
         return
 
-    # Foydalanuvchi bazada bormi
-    cur.execute("SELECT user_id FROM users WHERE user_id=?", (uid,))
-    if not cur.fetchone():
-        ref = None
-        if context.args:
-            try:
-                r = int(context.args[0])
-                if r != uid:
-                    ref = r
-            except:
-                pass
+    # 🎲 Random RC (balanslangan)
+    rc = round(random.uniform(0.0050, 0.0150), 4)
 
-        cur.execute(
-            "INSERT INTO users(user_id, referrer) VALUES(?, ?)",
-            (uid, ref)
-        )
-
-        if ref:
-            cur.execute("UPDATE users SET refs = refs + 1 WHERE user_id=?", (ref,))
-            cur.execute("SELECT refs FROM users WHERE user_id=?", (ref,))
-            refs = cur.fetchone()[0]
-            if refs >= REF_TARGET:
-                cur.execute(
-                    "UPDATE users SET balance = balance + ? WHERE user_id=?",
-                    (REF_REWARD, ref)
-                )
-
-        conn.commit()
-
-    await update.message.reply_text(
-        "👋 Xush kelibsiz!\n\n"
-        "💸 10 ta referal = 15 000 so‘m\n"
-        "📢 Referal linkingizni ulashing",
-        reply_markup=menu
-    )
-
-# ================== REFERAL LINK ==================
-async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    bot = await context.bot.get_me()
-    await update.message.reply_text(
-        f"🔗 Sizning referal linkingiz:\n"
-        f"https://t.me/{bot.username}?start={uid}"
-    )
-
-# ================== STATISTIKA ==================
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cur.execute("SELECT refs, balance FROM users WHERE user_id=?", (uid,))
-    r, b = cur.fetchone()
-    await update.message.reply_text(
-        f"📊 Referallar soni: {r}\n"
-        f"💰 Balans: {b} so‘m"
-    )
-
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-
-    if text == "📊 Statistika":
-        await stats(update, context)
-
-    elif text == "💰 Balans":
-        await balance(update, context)
-
-    elif text == "📤 Pul yechish":
-        await withdraw(update, context)
-
-    elif text == "🔗 Referal link":
-        await link(update, context)
-
-    elif text == "💳 Click":
-        await click(update, context)
-
-    elif text == "👤 Admin":
-        await admin(update, context)
-
-# ================== BALANS ==================
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-    b = cur.fetchone()[0]
-    await update.message.reply_text(f"💰 Balansingiz: {b} so‘m")
-
-# ================== PUL YECHISH ==================
-async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    cur.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-    b = cur.fetchone()[0]
-
-    if b < REF_REWARD:
-        await update.message.reply_text("❌ Minimal yechish: 15 000 so‘m")
+    # 🚫 Daily limit
+    if state["daily_rc"] + rc > MAX_DAILY_RC:
+        await call.answer("🚫 Kunlik limit tugadi!", show_alert=True)
         return
 
-    cur.execute(
-        "INSERT INTO withdraws(user_id, amount, status) VALUES(?,?,?)",
-        (uid, b, "pending")
-    )
-    cur.execute("UPDATE users SET balance=0 WHERE user_id=?", (uid,))
-    conn.commit()
+    # 💰 Balans qo‘shish
+    users[uid]["rc_balance"] += rc
+    state["daily_rc"] += rc
+    state["click_count"] += 1
 
-    await update.message.reply_text("📨 So‘rov yuborildi. Admin bilan bog‘laning.")
-    await context.bot.send_message(
-        ADMIN_ID,
-        f"📤 Yangi pul yechish so‘rovi\nUser ID: {uid}\nSumma: {b} so‘m"
-    )
+# CLICKER REYTING STAT
+    if uid not in clicker_stats:
+        clicker_stats[uid] = {
+            "total_rc": 0
+        }
 
-# ================== CLICK ==================
-async def click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💳 Click (TEST)", callback_data="click_test")]
-    ])
-    await update.message.reply_text("💳 To‘lov usulini tanlang:", reply_markup=kb)
+    clicker_stats[uid]["total_rc"] += rc
 
-async def click_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.message.reply_text("🧪 Click TEST tanlandi.\nAdmin bilan bog‘laning.")
-    await context.bot.send_message(
-        ADMIN_ID,
-        f"💳 Click TEST bosildi\nUser ID: {q.from_user.id}"
+    # ⏳ 50 urishdan keyin pause
+    if state["click_count"] >= 50:
+        state["pause_until"] = now + datetime.timedelta(seconds=15)
+        state["click_count"] = 0
+
+    text = (
+        f"<b>🪙 REFERAL COIN – CLICKER</b>\n\n"
+        f"💰 UMUMIY BALANS: <b>{format_rc(users[uid]['rc_balance'])} RC</b>\n"
+        f"⏱️ Bugun yig‘ilgan: <code>{format_rc(state['daily_rc'])} / {format_rc(MAX_DAILY_RC)}</code>\n\n"
+        f"🎉 Joriy hisob: +{format_rc(rc)} RC"
     )
 
-# ================== ADMIN ==================
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👤 Admin: @Lok_for_me")
+    await call.message.edit_text(text, parse_mode="HTML", reply_markup=clicker_inline_kb())
 
-# ================== RUN ==================
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+###############################
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("link", link))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("withdraw", withdraw))
-    app.add_handler(CommandHandler("click", click))
-    app.add_handler(CallbackQueryHandler(click_cb, pattern="click_test"))
-    app.add_handler(CommandHandler("admin", admin))
+# 🏆 Reyting
+@router.message(F.text == "🏆 Reyting")
+async def clicker_ranking(message: Message, bot: Bot):
 
-    app.run_polling()
+    ranking = get_clicker_ranking()
 
-if __name__ == "__main__":
-    main()
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
+    text = "🏆 RC YIG‘ISH REYTING\n\n"
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for position, (user_id, data) in enumerate(ranking[:10], start=1):
+        try:
+            user = await bot.get_chat(user_id)
+            username = user.username or user.first_name
+        except:
+            username = "user"
+
+        medal = medals[position-1] if position <= 3 else f"{position}"
+
+        text += (
+            f"{medal} @{username} "
+            f"{format_rc(data['total_rc'])} RC\n"
+        )
+
+    await message.answer(text)
+
+#########
+
+# ------------------- MINI O'YIN (00:00:00 - 00:15:00) -------------------
+
+@router.message(F.text == "🎯 Mini O‘yin")
+async def start_mini_game(message: Message):
+    uid = message.from_user.id
+    now = datetime.datetime.now()
+
+    # O‘yin boshlanish va tugash vaqti
+    start_time = datetime.time(0, 0, 0)
+    end_time = datetime.time(0, 15, 0)
+    target_time = datetime.time(0, 10, 0)  # Maqsad
+
+    mini_game_state[uid] = {
+        "start": start_time,
+        "end": end_time,
+        "target": target_time,
+        "reward_given": False,
+        "started_at": now
+    }
+
+    await message.answer(
+        "🎯 Mini o‘yinga xush kelibsiz!\n\n"
+        "🔹 Maqsad: 00:10:00 vaqtga yaqin to‘xtatish.\n"
+        "⏱️ Inline tugma orqali to‘xtating va agar to‘g‘ri vaqtni ushlasangiz 50 RC olasiz!\n"
+        "🕒 O‘yin 00:00:00 dan 00:15:00 gacha davom etadi.",
+        reply_markup=mini_game_kb()
+    )
+
+@router.callback_query(F.data == "stop_timer")
+async def stop_mini_game(call: CallbackQuery):
+    uid = call.from_user.id
+    now = datetime.datetime.now()
+
+    if uid not in mini_game_state:
+        await call.answer("⚠️ O‘yin hali boshlanmadi.", show_alert=True)
+        return
+
+    game = mini_game_state[uid]
+    stop_time = now.time()
+    target_time = game["target"]
+    start_time = game["start"]
+    end_time = game["end"]
+
+    # O‘yin oralig‘ini tekshirish
+    if not (start_time <= stop_time <= end_time):
+        await call.answer("❌ O‘yin vaqti 00:00:00 - 00:15:00 oralig‘ida bo‘lishi kerak!", show_alert=True)
+        return
+
+    # Sekundga o‘girish
+    target_seconds = target_time.hour*3600 + target_time.minute*60 + target_time.second
+    stop_seconds = stop_time.hour*3600 + stop_time.minute*60 + stop_time.second
+
+    # 1 soniya farq ruxsat
+    if abs(stop_seconds - target_seconds) <= 1 and not game["reward_given"]:
+        state = clicker_state.setdefault(uid, {
+            "click_count": 0,
+            "pause_until": None,
+            "daily_rc": 0.0,
+            "daily_reset": now.date(),
+        })
+
+        reward = 50.0
+        if state["daily_rc"] + reward > MAX_DAILY_RC:
+            reward = MAX_DAILY_RC - state["daily_rc"]
+            if reward <= 0:
+                await call.answer("🚫 Kunlik limit tugadi! RC ololmadingiz.", show_alert=True)
+                mini_game_state.pop(uid, None)
+                await call.message.edit_reply_markup(reply_markup=None)
+                return
+
+        users[uid]["rc_balance"] += reward
+        state["daily_rc"] += reward
+        game["reward_given"] = True
+        await call.answer(f"🎉 To‘g‘ri vaqtni ushladingiz! +{int(reward)} RC", show_alert=True)
+    else:
+        await call.answer("❌ Xato vaqt, afsus! Qayta urinib ko‘ring.", show_alert=True)
+
+    # Tugmani olib tashlash va o‘yin holatini tozalash
+    await call.message.edit_reply_markup(reply_markup=None)
+    mini_game_state.pop(uid, None)
