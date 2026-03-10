@@ -19,7 +19,7 @@ def format_rc(amount: float) -> str:
     text = f"{amount:.4f}"
     return text.rstrip("0").rstrip(".")
 
-MAX_DAILY_RC = 100.0
+MAX_DAILY_RC = 100.0 
 
 router = Router()
 
